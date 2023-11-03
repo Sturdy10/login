@@ -410,7 +410,7 @@ func main() {
 
 		c.JSON(200, gin.H{"status": "OK", "message": "Password updated successfully"})
 	})
-	if err := r.Run(":8060"); err != nil {
+	if err := r.Run(":8080"); err != nil {
 		log.Fatal(err)
 	}
 
