@@ -14,21 +14,31 @@ import (
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type RequestPersonal struct {
-	Firstname      string `json:"firstname"`
-	Lastname       string `json:"lastname"`
-	Jobtitle       string `json:"jobtitle"`
-	Mobilenumber   string `json:"mobilenumber"`
-	Email          string `json:"email"`
-	Password       string `json:"password"`
-	Oldpassword    string `json:"oldpassword"`
-	Newpassword    string `json:"newpassword"`
-	Remember       bool   `json:"remember"`
-	Requiresaction string `json:"requires_action"`
+	ID             uuid.UUID `json:"id"`
+	Firstname      string    `json:"firstname"`
+	Lastname       string    `json:"lastname"`
+	Jobtitle       string    `json:"jobtitle"`
+	Mobilenumber   string    `json:"mobilenumber"`
+	Email          string    `json:"email"`
+	Password       string    `json:"password"`
+	Oldpassword    string    `json:"oldpassword"`
+	Newpassword    string    `json:"newpassword"`
+	Remember       bool      `json:"remember"`
+	Requiresaction string    `json:"requires_action"`
+}
+type UserData struct {
+	ID           uuid.UUID `json:"id"`
+	Firstname    string    `json:"firstname"`
+	Lastname     string    `json:"lastname"`
+	Jobtitle     string    `json:"jobtitle"`
+	Mobilenumber string    `json:"mobilenumber"`
+	Email        string    `json:"email"`
 }
 
 var jwtSecret = []byte("not-key") // Replace "your-secret-key" with your actual secret key
@@ -49,7 +59,7 @@ func createToken(email string, remember bool, requires_action string) (string, e
 	claims := token.Claims.(jwt.MapClaims)
 	claims["email"] = email
 	claims["requires_action"] = requires_action // fixed the typo and added this field to the token
-	claims["exp"] = expirationTime.Unix()     // Token expiration time
+	claims["exp"] = expirationTime.Unix()       // Token expiration time
 
 	// Signing the token with a secret
 	tokenString, err := token.SignedString(jwtSecret)
@@ -133,6 +143,8 @@ func updatePassword(db *sql.DB, email, oldpassword, newpassword, requires_action
 }
 
 
+
+
 func sendEmail(to, subject, body string) error {
 	// กำหนดข้อมูลสำหรับเข้าระบบ SMTP
 	smtpServer := "smtp.gmail.com"
@@ -143,13 +155,18 @@ func sendEmail(to, subject, body string) error {
 	// กำหนดข้อมูลอีเมล
 	from := senderEmail
 	recipients := []string{to}
-	message := fmt.Sprintf("To: %s\r\n", to) +
+
+	// Create the email content in HTML format
+	msg := []byte("To: " + to + "\r\n" +
 		"Subject: " + subject + "\r\n" +
-		"\r\n" + body
+		"MIME-Version: 1.0;\r\n" +
+		"Content-Type: text/html; charset=\"UTF-8\";\r\n" +
+		"\r\n" +
+		body)
 
 	// ติดต่อ SMTP เซิร์ฟเวอร์และส่งอีเมล
 	auth := smtp.PlainAuth("", senderEmail, senderPassword, smtpServer)
-	err := smtp.SendMail(fmt.Sprintf("%s:%d", smtpServer, smtpPort), auth, from, recipients, []byte(message))
+	err := smtp.SendMail(fmt.Sprintf("%s:%d", smtpServer, smtpPort), auth, from, recipients, msg)
 	return err
 }
 
@@ -189,11 +206,13 @@ func main() {
 			c.JSON(400, gin.H{"status": "error", "message": err.Error()})
 			return
 		}
+
 		firstname := reqPersonal.Firstname
 		lastname := reqPersonal.Lastname
 		jobTitle := reqPersonal.Jobtitle
 		mobilenumber := reqPersonal.Mobilenumber
 		email := reqPersonal.Email
+		remember := reqPersonal.Remember
 
 		if firstname == "" || lastname == "" || jobTitle == "" || mobilenumber == "" || email == "" {
 			c.JSON(400, gin.H{"status": "error", "message": "Missing required fields in JSON"})
@@ -207,27 +226,87 @@ func main() {
 
 		generatedPassword := generateRandomPassword(8)
 
-		requiresaction := "change_password"
+		requires_action := "change_password"
 
-		if err := insertData(db, firstname, lastname, jobTitle, mobilenumber, email, generatedPassword, requiresaction); err != nil {
+		if err := insertData(db, firstname, lastname, jobTitle, mobilenumber, email, generatedPassword, requires_action); err != nil {
 			c.JSON(500, gin.H{"status": "error", "message": "Failed to register user", "details": err.Error()})
 			return
 		}
 
-		// ส่งอีเมลแจ้งผู้ใช้
-		to := reqPersonal.Email // สมมติว่าคุณมีฟิลด์ "Email" ใน reqPersonal
-		subject := "welcome! You have successfully registered."
-		body := "Please use the default password porovide below to Login\n"
-		body += "Email: " + email + "\n"                // เพิ่มชื่อผู้ใช้
-		body += "Password: " + generatedPassword + "\n" // เพิ่มรหัสผ่าน
+		token, err := createToken(email, remember, requires_action)
+			if err != nil {
+				c.JSON(500, gin.H{"status": "error", "message": "Failed to create token", "details": err.Error()})
+				return
+			}
 
-		if err := sendEmail(to, subject, body); err != nil {
-			log.Printf("เกิดข้อผิดพลาดในการส่งอีเมล: %s", err.Error())
-			c.JSON(500, gin.H{"status": "error", "message": "Failed to send registration email"})
+			// ส่งอีเมลแจ้งผู้ใช้
+			to := reqPersonal.Email
+			subject := "welcome! You have successfully registered."
+			body := "Please use the default password provided below to Login<br>"
+			body += "Email: " + email + "<br>" 
+			body += "Password: " + generatedPassword + "<br>"
+			body += "<a href='http://localhost:3000/resetpassword/?token=" + token + "'>Confirm Link</a><br>"
+
+			if err := sendEmail(to, subject, body); err != nil {
+				log.Printf("เกิดข้อผิดพลาดในการส่งอีเมล: %s", err.Error())
+				c.JSON(500, gin.H{"status": "error", "message": "Failed to send registration email"})
+				return
+			}
+
+			c.JSON(200, gin.H{"status": "OK", "message": "User registered successfully"})
+	})
+
+	r.GET("/api/users", func(c *gin.Context) {
+		// Query the database to retrieve user data, including ID
+		rows, err := db.Query("SELECT per_pk, per_firstname, per_Lastname, per_jobtitle, per_mobilenumber, per_email FROM personaldetails")
+		if err != nil {
+			c.JSON(500, gin.H{"status": "error", "message": "Failed to retrieve users", "details": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		users := []UserData{}
+
+		// Iterate through the rows and add them to the users slice
+		for rows.Next() {
+			var user UserData
+			err := rows.Scan(&user.ID, &user.Firstname, &user.Lastname, &user.Jobtitle, &user.Mobilenumber, &user.Email)
+			if err != nil {
+				c.JSON(500, gin.H{"status": "error", "message": "Failed to scan user data", "details": err.Error()})
+				return
+			}
+			users = append(users, user)
+		}
+
+		// Check for errors from iterating over rows
+		if err := rows.Err(); err != nil {
+			c.JSON(500, gin.H{"status": "error", "message": "Failed to iterate over user data", "details": err.Error()})
 			return
 		}
 
-		c.JSON(200, gin.H{"status": "OK", "message": "User registered successfully"})
+		c.JSON(200, gin.H{"status": "OK", "data": users})
+	})
+
+	r.DELETE("/api/delete-user/:id", func(c *gin.Context) {
+		// Get the user ID from the URL parameter
+		userID := c.Param("id")
+
+		// Parse the user ID as a UUID
+		id, err := uuid.Parse(userID)
+		if err != nil {
+			c.JSON(400, gin.H{"status": "error", "message": "Invalid user ID"})
+			return
+		}
+
+		// Execute the SQL query to delete the user with the given ID
+		query := "DELETE FROM personaldetails WHERE per_pk = $1"
+		_, err = db.Exec(query, id)
+		if err != nil {
+			c.JSON(500, gin.H{"status": "error", "message": "Failed to delete user", "details": err.Error()})
+			return
+		}
+
+		c.JSON(200, gin.H{"status": "OK", "message": "User deleted successfully"})
 	})
 
 	r.POST("/api/login", func(c *gin.Context) {
@@ -236,16 +315,16 @@ func main() {
 			c.JSON(400, gin.H{"status": "error", "message": err.Error()})
 			return
 		}
-	
+
 		email := reqPersonal.Email
 		password := reqPersonal.Password
 		remember := reqPersonal.Remember
-	
+
 		if email == "" || len(password) < 8 {
 			c.JSON(400, gin.H{"status": "error", "message": "Email is missing or the password is too short (min 8 characters) or remember value is invalid"})
 			return
 		}
-	
+
 		// Query the user's data from the database, including 'requiresaction'
 		var hashedPassword, requires_action string
 		query := "SELECT password, requires_action FROM personaldetails WHERE per_email = $1"
@@ -258,48 +337,47 @@ func main() {
 			c.JSON(500, gin.H{"status": "error", "message": "Database error", "details": err.Error()})
 			return
 		}
-	
+
 		// Verify the password
 		err = bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
 		if err != nil {
 			c.JSON(401, gin.H{"status": "error", "message": "Incorrect Email or Password"})
 			return
 		}
-	
+
 		token, err := createToken(email, remember, requires_action)
 		if err != nil {
 			c.JSON(500, gin.H{"status": "error", "message": "Failed to create token", "details": err.Error()})
 			return
 		}
-	
+
 		c.JSON(200, gin.H{"status": "OK", "token": token, "message": "Login successful"})
 	})
-	
+
 	r.PATCH("/api/change-password", AuthMiddleware(), func(c *gin.Context) {
 		// ดึง email จาก token
 		claims := c.MustGet("claims").(jwt.MapClaims)
 		email := claims["email"].(string)
-		
 
-		   // Bind the JSON body to a struct
-		   reqPersonal := RequestPersonal{}
-		   if err := c.ShouldBindJSON(&reqPersonal); err != nil {
-			   c.JSON(400, gin.H{"status": "error", "message": err.Error()})
-			   return
-		   }
-	   
-		   // Validate email
-		   if email != reqPersonal.Email || email == "" {
-			   c.JSON(401, gin.H{"status": "error", "message": "Invalid token or email"})
-			   return
-		   }
-	   
-		   oldpassword := reqPersonal.Oldpassword
-		   newpassword := reqPersonal.Newpassword
-		   requires_action := reqPersonal.Requiresaction
-	   
-		   // Validate input
-		   if oldpassword == "" || newpassword == "" || len(oldpassword) < 8 || len(newpassword) < 8 {
+		// Bind the JSON body to a struct
+		reqPersonal := RequestPersonal{}
+		if err := c.ShouldBindJSON(&reqPersonal); err != nil {
+			c.JSON(400, gin.H{"status": "error", "message": err.Error()})
+			return
+		}
+
+		// Validate email
+		if email != reqPersonal.Email || email == "" {
+			c.JSON(401, gin.H{"status": "error", "message": "Invalid token or email"})
+			return
+		}
+
+		oldpassword := reqPersonal.Oldpassword
+		newpassword := reqPersonal.Newpassword
+		requires_action := reqPersonal.Requiresaction
+
+		// Validate input
+		if oldpassword == "" || newpassword == "" || len(oldpassword) < 8 || len(newpassword) < 8 {
 			c.JSON(400, gin.H{"status": "error", "message": "Invalid input"})
 			return
 		}
