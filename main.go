@@ -69,6 +69,34 @@ func createToken(email string, remember bool, requires_action string) (string, e
 
 	return tokenString, nil
 }
+func createTokenI(email string, remember bool, requires_action string) (string, error) {
+	// Set expiration time based on the remember parameter
+	var expirationTime time.Time
+	if remember {
+		// Token expires in 30 days
+		expirationTime = time.Now().Add(30 * 24 * time.Hour)
+	} else {
+		// Token expires in 3 days
+		expirationTime = time.Now().Add(3 * 24 * time.Hour)
+	}
+
+	// Creating the token
+	token := jwt.New(jwt.GetSigningMethod("HS256"))
+	claims := token.Claims.(jwt.MapClaims)
+	claims["email"] = email
+	claims["requires_action"] = requires_action // fixed the typo and added this field to the token
+	claims["exp"] = expirationTime.Unix()       // Token expiration time
+
+	// Signing the token with a secret
+	tokenString, err := token.SignedString(jwtSecret)
+	if err != nil {
+		return "", err
+	}
+
+	return tokenString, nil
+}
+
+
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -141,7 +169,19 @@ func updatePassword(db *sql.DB, email, oldpassword, newpassword, requires_action
 
 	return err
 }
+func updatePasswordI(db *sql.DB, email, newpassword, requires_action string) error {
+    // Hash the new password
+    hashedNewPassword, err := bcrypt.GenerateFromPassword([]byte(newpassword), bcrypt.DefaultCost)
+    if err != nil {
+        return err
+    }
 
+    // Update password and requires_action in the database
+    query := "UPDATE personaldetails SET password = $1, requires_action = $2 WHERE per_email = $3"
+    _, err = db.Exec(query, string(hashedNewPassword), requires_action, email)
+
+    return err
+}
 
 
 
@@ -206,38 +246,38 @@ func main() {
 			c.JSON(400, gin.H{"status": "error", "message": err.Error()})
 			return
 		}
-
+	
 		firstname := reqPersonal.Firstname
 		lastname := reqPersonal.Lastname
 		jobTitle := reqPersonal.Jobtitle
 		mobilenumber := reqPersonal.Mobilenumber
 		email := reqPersonal.Email
 		remember := reqPersonal.Remember
-
+	
 		if firstname == "" || lastname == "" || jobTitle == "" || mobilenumber == "" || email == "" {
 			c.JSON(400, gin.H{"status": "error", "message": "Missing required fields in JSON"})
 			return
 		}
-
+	
 		if len(mobilenumber) > 10 {
 			c.JSON(400, gin.H{"status": "error", "message": "Mobile number must not exceed 10 characters"})
 			return
 		}
-
+	
 		generatedPassword := generateRandomPassword(8)
-
+	
 		requires_action := "change_password"
-
+	
 		if err := insertData(db, firstname, lastname, jobTitle, mobilenumber, email, generatedPassword, requires_action); err != nil {
 			c.JSON(500, gin.H{"status": "error", "message": "Failed to register user", "details": err.Error()})
 			return
 		}
-
-		token, err := createToken(email, remember, requires_action)
-			if err != nil {
-				c.JSON(500, gin.H{"status": "error", "message": "Failed to create token", "details": err.Error()})
-				return
-			}
+	
+		token, err := createTokenI(email, remember, requires_action)
+		if err != nil {
+			c.JSON(500, gin.H{"status": "error", "message": "Failed to create token", "details": err.Error()})
+			return
+		}
 
 			// ส่งอีเมลแจ้งผู้ใช้
 			to := reqPersonal.Email
@@ -345,7 +385,11 @@ func main() {
 			return
 		}
 
+	
+
+		
 		token, err := createToken(email, remember, requires_action)
+
 		if err != nil {
 			c.JSON(500, gin.H{"status": "error", "message": "Failed to create token", "details": err.Error()})
 			return
@@ -410,8 +454,52 @@ func main() {
 
 		c.JSON(200, gin.H{"status": "OK", "message": "Password updated successfully"})
 	})
-	if err := r.Run(":8060"); err != nil {
+
+
+	r.PATCH("/api/change-password-byconfirm-link", AuthMiddleware(), func(c *gin.Context) {
+		// ดึง email จาก token
+		claims := c.MustGet("claims").(jwt.MapClaims)
+		email := claims["email"].(string)
+	
+		// Bind the JSON body to a struct
+		reqPersonal := RequestPersonal{}
+		if err := c.ShouldBindJSON(&reqPersonal); err != nil {
+			c.JSON(400, gin.H{"status": "error", "message": err.Error()})
+			return
+		}
+	
+		// Validate email
+		if email != reqPersonal.Email || email == "" {
+			c.JSON(401, gin.H{"status": "error", "message": "Invalid token or email"})
+			return
+		}
+	
+		newpassword := reqPersonal.Newpassword
+		requires_action := reqPersonal.Requiresaction
+	
+		// Validate input
+		if newpassword == "" || len(newpassword) < 8 {
+			c.JSON(400, gin.H{"status": "error", "message": "Invalid input"})
+			return
+		}
+	
+		// Update the password and requires_action in the database with the new hashed password
+		err := updatePasswordI(db, email, newpassword, requires_action)
+		if err != nil {
+			c.JSON(500, gin.H{"status": "error", "message": "Failed to update password", "details": err.Error()})
+			return
+		}
+	
+		c.JSON(200, gin.H{"status": "OK", "message": "Password updated successfully"})
+	})
+	
+
+
+
+	if err := r.Run(":8080"); err != nil {
 		log.Fatal(err)
 	}
 
 }
+	
+		
